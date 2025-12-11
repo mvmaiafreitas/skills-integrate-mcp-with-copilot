@@ -5,14 +5,34 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import os
 from pathlib import Path
+import json
+from typing import Optional
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
+
+security = HTTPBasic()
+
+# In-memory session storage (for simplicity)
+sessions = {}
+
+# Load teacher credentials from JSON file
+def load_teachers():
+    teachers_file = Path(__file__).parent / "teachers.json"
+    try:
+        with open(teachers_file, 'r') as f:
+            data = json.load(f)
+            return {teacher['username']: teacher['password'] for teacher in data['teachers']}
+    except FileNotFoundError:
+        return {}
+
+teachers = load_teachers()
 
 # Mount the static files directory
 current_dir = Path(__file__).parent
@@ -78,9 +98,50 @@ activities = {
 }
 
 
+def verify_teacher(credentials: Optional[HTTPBasicCredentials] = Depends(security)):
+    """Verify teacher credentials"""
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    
+    username = credentials.username
+    password = credentials.password
+    
+    if username not in teachers or teachers[username] != password:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    
+    return username
+
+
 @app.get("/")
 def root():
     return RedirectResponse(url="/static/index.html")
+
+
+@app.post("/login")
+def login(credentials: HTTPBasicCredentials = Depends(security)):
+    """Authenticate a teacher"""
+    username = verify_teacher(credentials)
+    return {"message": "Login successful", "username": username}
+
+
+@app.get("/check-auth")
+def check_auth(credentials: Optional[HTTPBasicCredentials] = Depends(security)):
+    """Check if user is authenticated"""
+    try:
+        if credentials:
+            username = verify_teacher(credentials)
+            return {"authenticated": True, "username": username}
+    except HTTPException:
+        pass
+    return {"authenticated": False}
 
 
 @app.get("/activities")
@@ -89,8 +150,8 @@ def get_activities():
 
 
 @app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str):
-    """Sign up a student for an activity"""
+def signup_for_activity(activity_name: str, email: str, username: str = Depends(verify_teacher)):
+    """Sign up a student for an activity (teachers only)"""
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
@@ -111,8 +172,8 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
-    """Unregister a student from an activity"""
+def unregister_from_activity(activity_name: str, email: str, username: str = Depends(verify_teacher)):
+    """Unregister a student from an activity (teachers only)"""
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
